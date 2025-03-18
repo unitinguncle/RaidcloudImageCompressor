@@ -13,6 +13,8 @@ from multiprocessing import Manager
 from pathlib import Path
 import sys
 import multiprocessing
+#import piexif
+
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
@@ -57,7 +59,11 @@ async def compress_image(file_path, output_folder, output_format, jpeg_quality, 
                 img_data = await f.read()
 
             img = Image.open(io.BytesIO(img_data))
-            new_filename = os.path.splitext(filename)[0] + f"_compressed.{output_format.lower()}"
+
+            # Extract EXIF metadata from the original image
+            exif_data = img.info.get("exif", None)  # Get EXIF data if it exists
+
+            new_filename = os.path.splitext(filename)[0] + f"_C.{output_format.lower()}"
             new_file_path = os.path.join(output_folder, new_filename)
 
             if filename.lower().endswith(('.cr2', '.cr3', '.nef', '.nrw', '.arw', '.sr2', '.srf')):
@@ -68,6 +74,10 @@ async def compress_image(file_path, output_folder, output_format, jpeg_quality, 
                 save_args["quality"] = jpeg_quality
             elif output_format == "PNG":
                 save_args["compress_level"] = png_compression
+
+            # Save the compressed image with the original EXIF metadata
+            if exif_data:
+                save_args["exif"] = exif_data  # Add EXIF data to save arguments
 
             img.save(new_file_path, **save_args)
             logging.info(f"Successfully compressed {filename}")
@@ -80,12 +90,42 @@ async def compress_image(file_path, output_folder, output_format, jpeg_quality, 
             await asyncio.sleep(2 ** attempt)
 
 class ImageCompressorApp:
+    def start_move(self, event):
+            #"""Record the initial mouse position for moving the window."""
+            self.x = event.x
+            self.y = event.y
+
+    def stop_move(self, event):
+            #"""Clear the initial mouse position."""
+            self.x = None
+            self.y = None
+
+    def on_move(self, event):
+            """Move the window based on mouse movement."""
+            deltax = event.x - self.x
+            deltay = event.y - self.y
+            x = self.root.winfo_x() + deltax
+            y = self.root.winfo_y() + deltay
+            self.root.geometry(f"+{x}+{y}")
+
+    def center_window(self):
+        """Center the window on the screen."""
+        self.root.update_idletasks()  # Update window geometry
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        self.root.geometry(f"+{x}+{y}")
+
     def __init__(self, root):
         self.root = root
-        self.root.title("RaidCloud Compressor v1.0.0")
+        self.root.title("RaidCloud Compressor v1.1.0")
         self.root.geometry("1100x700")
         self.root.configure(bg="#141313")
         self.root.resizable(False, False)
+        self.root.overrideredirect(True)  # Disable title bar
 
         # Variables
         self.folder_path = StringVar()
@@ -95,14 +135,20 @@ class ImageCompressorApp:
         self.api_key = StringVar()
         self.cancel_process = False  # Flag to cancel the compression process
 
+        # Make the window movable
+        self.root.bind("<ButtonPress-1>", self.start_move)
+        self.root.bind("<ButtonRelease-1>", self.stop_move)
+        self.root.bind("<B1-Motion>", self.on_move)
+
         # Create Canvas
         self.canvas = Canvas(
             self.root,
             bg="#141313",
             height=700,
             width=1100,
-            bd=0,
-            highlightthickness=0,
+            bd=2,
+            highlightthickness=0.5,
+            highlightbackground="#37B4FC",
             relief="ridge"
         )
         self.canvas.place(x=0, y=0)
@@ -116,12 +162,15 @@ class ImageCompressorApp:
         self.image_image_2 = PhotoImage(file=resource_path("assets/image_2.png"))
         self.canvas.create_image(78.0, 30.0, image=self.image_image_2)
         self.canvas.create_text(
-            150.0, 21.0, anchor="nw", text="RaidCloud Image Compressor",
+            150.0, 21.0, anchor="nw", text="RaidCloud Image Compressor v1.1.0",
             fill="#FFFFFF", font=("Terminal", 24 * -1)
         )
         # Background image
         self.image_image_1 = PhotoImage(file=resource_path("assets/image_1.png"))
         self.canvas.create_image(550.0, 377.0, image=self.image_image_1)
+
+        self.close_button = Button(self.root, text="X", command=self.root.destroy, bg="red", fg="white", font=("Arial", 12, "bold"))
+        self.close_button.place(x=1050, y=18, width=30, height=30)
 
         # Select Folder Section
         self.canvas.create_text(
@@ -204,7 +253,7 @@ class ImageCompressorApp:
 
         # Estimated Size Label
         self.estimated_size_label = self.canvas.create_text(
-            577.0, 256.0, anchor="nw", text="ESTIMATED SIZE : N/A",
+            577.0, 246.0, anchor="nw", text="ESTIMATED SIZE : N/A",
             fill="#FFFFFF", font=("Terminal", 13 * -1)
         )
 
@@ -276,9 +325,11 @@ class ImageCompressorApp:
         self.view_log_button.config(state="disabled")  # Disabled by default
 
         self.canvas.create_text(
-            320.0, 680.0, anchor="nw", text="DESIGNED AND DEVELOPED BY RAIDCLOUD | CONTACT US ON RAIDCLOUD@GMAIL.COM",
+            320.0, 680.0, anchor="nw", text="DESIGNED AND DEVELOPED BY RAIDCLOUD | CONTACT US ON UNRAIDSOLUTIONS@GMAIL.COM",
             fill="#FFFFFF", font=("Terminal", 11 * -1)
         )
+
+        self.center_window()
 
     def browse_folder(self):
         folder_selected = filedialog.askdirectory()
@@ -308,10 +359,14 @@ class ImageCompressorApp:
         for file_path in image_files:
             original_size = os.path.getsize(file_path)
             if file_path.lower().endswith(('.jpg', '.jpeg')):
-                estimated_size = original_size * (jpeg_quality / 100)
+                quality_factor = jpeg_quality / 100
+                estimated_size = original_size * (quality_factor ** 1.5)
+                #estimated_size = original_size * (jpeg_quality / 100)
             elif file_path.lower().endswith('.png'):
-                compression_factor = 1.0 - (0.03 * png_compression)
+                compression_factor = 1.0 - (png_compression * 0.1)
                 estimated_size = original_size * compression_factor
+                #compression_factor = 1.0 - (0.03 * png_compression)
+                #estimated_size = original_size * compression_factor
             else:
                 estimated_size = original_size
 
@@ -321,7 +376,7 @@ class ImageCompressorApp:
         avg_original_size = total_original_size / len(image_files) if image_files else 0
         avg_size = total_size / len(image_files) if image_files else 0
 
-        self.canvas.itemconfig(self.estimated_size_label, text=f"Total Original size: {total_original_size / (1024 * 1024):.2f} MB\nOriginal Average file size: {avg_original_size / 1024:.2f} KB \n\nEstimated size after compression: {total_size / (1024 * 1024):.2f} MB\nAverage compressed file size: {avg_size / 1024:.2f} KB")
+        self.canvas.itemconfig(self.estimated_size_label, text=f"Total Original size: {total_original_size / (1024 * 1024):.2f} MB\nOriginal Average file size: {avg_original_size / 1024:.2f} KB \n\nEstimated size after compression: {total_size / (1024 * 1024):.2f} MB\nAverage compressed file size: {avg_size / 1024:.2f} KB\n\nPLEASE NOTE:- This is a rough estimation of compressed file.\n The output files will be smaller than the estimated size.")
 
     def toggle_upload_fields(self):
         if self.upload_to_immich.get() == "yes":
@@ -354,7 +409,7 @@ class ImageCompressorApp:
                 logging.error(error_message)
                 return
 
-        compressed_folder = os.path.join(folder_path, "compressed")
+        compressed_folder = os.path.join(folder_path, "Compressed")
         if not os.path.exists(compressed_folder):
             os.makedirs(compressed_folder)
 
