@@ -13,8 +13,6 @@ from multiprocessing import Manager
 from pathlib import Path
 import sys
 import multiprocessing
-#import piexif
-
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
@@ -90,23 +88,6 @@ async def compress_image(file_path, output_folder, output_format, jpeg_quality, 
             await asyncio.sleep(2 ** attempt)
 
 class ImageCompressorApp:
-    def start_move(self, event):
-            #"""Record the initial mouse position for moving the window."""
-            self.x = event.x
-            self.y = event.y
-
-    def stop_move(self, event):
-            #"""Clear the initial mouse position."""
-            self.x = None
-            self.y = None
-
-    def on_move(self, event):
-            """Move the window based on mouse movement."""
-            deltax = event.x - self.x
-            deltay = event.y - self.y
-            x = self.root.winfo_x() + deltax
-            y = self.root.winfo_y() + deltay
-            self.root.geometry(f"+{x}+{y}")
 
     def center_window(self):
         """Center the window on the screen."""
@@ -125,7 +106,8 @@ class ImageCompressorApp:
         self.root.geometry("1100x700")
         self.root.configure(bg="#141313")
         self.root.resizable(False, False)
-        self.root.overrideredirect(True)  # Disable title bar
+        #self.root.overrideredirect(True)  # Disable title bar
+        #self.root.wm_attributes("-topmost", 1)
 
         # Variables
         self.folder_path = StringVar()
@@ -134,11 +116,6 @@ class ImageCompressorApp:
         self.server_address = StringVar(value="https://photos.raidcloud.in")
         self.api_key = StringVar()
         self.cancel_process = False  # Flag to cancel the compression process
-
-        # Make the window movable
-        self.root.bind("<ButtonPress-1>", self.start_move)
-        self.root.bind("<ButtonRelease-1>", self.stop_move)
-        self.root.bind("<B1-Motion>", self.on_move)
 
         # Create Canvas
         self.canvas = Canvas(
