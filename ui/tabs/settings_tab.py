@@ -75,7 +75,6 @@ class SettingsTab(QWidget):
         self.key_edit.setPlaceholderText("Immich API key")
         show_btn = QPushButton("Show")
         show_btn.setProperty("class", "secondary")
-        show_btn.setFixedWidth(60)
         show_btn.setCheckable(True)
         show_btn.toggled.connect(
             lambda on: (
@@ -110,7 +109,6 @@ class SettingsTab(QWidget):
         bin_row = QHBoxLayout()
         browse_bin = QPushButton("Browse")
         browse_bin.setProperty("class", "secondary")
-        browse_bin.setFixedWidth(80)
         browse_bin.clicked.connect(self._browse_binary)
         bin_row.addWidget(self.binary_edit)
         bin_row.addWidget(browse_bin)

@@ -6,6 +6,7 @@ Uploads a list of local files directly to an Immich server using its API.
 import os
 import mimetypes
 import requests
+import concurrent.futures
 
 from PySide6.QtCore import QThread, Signal
 
@@ -76,50 +77,75 @@ class UploaderThread(QThread):
         upload_url = f"{self.server_url}/api/assets"
         headers = {"x-api-key": self.api_key}
 
-        for idx, file_path in enumerate(self.files):
-            if self._cancel:
-                self.log.emit("Upload cancelled by user.", False)
-                break
+        # Keep workers reasonable (e.g. 5-10) to not hammer the server network layer too violently.
+        max_workers = min(10, os.cpu_count() or 4)
 
-            filename = os.path.basename(file_path)
-            mime, _ = mimetypes.guess_type(file_path)
-            if not mime:
-                mime = "application/octet-stream"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # We map futures to file_paths so we can track errors back to filename
+            futures = {}
+            for file_path in self.files:
+                fut = executor.submit(self._upload_worker, file_path, upload_url, headers)
+                futures[fut] = file_path
 
-            try:
-                with open(file_path, "rb") as f:
-                    resp = requests.post(
-                        upload_url,
-                        headers=headers,
-                        files={"assetData": (filename, f, mime)},
-                        data={
-                            "deviceAssetId": filename,
-                            "deviceId":      "RaidCloudImmichSuite",
-                            "fileCreatedAt": _file_mtime_iso(file_path),
-                            "fileModifiedAt": _file_mtime_iso(file_path),
-                            "isFavorite":    "false",
-                        },
-                        timeout=120,
-                    )
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
+                if self._cancel:
+                    self.log.emit("Upload cancelled by user.", False)
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                    
+                file_path = futures[future]
+                filename = os.path.basename(file_path)
 
-                if resp.status_code in (200, 201):
-                    self.file_done.emit(filename, "uploaded")
-                elif resp.status_code == 409:
-                    self.file_done.emit(filename, "duplicate (skipped)")
-                else:
-                    self.file_done.emit(filename, f"error {resp.status_code}")
-                    self.log.emit(
-                        f"[WARN] {filename}: HTTP {resp.status_code} — {resp.text[:80]}",
-                        True,
-                    )
+                try:
+                    result_label, log_warn_err = future.result()
+                    self.file_done.emit(filename, result_label)
+                    if log_warn_err:
+                        self.log.emit(log_warn_err[0], log_warn_err[1])
+                except Exception as exc:
+                    self.file_done.emit(filename, "FAILED")
+                    self.log.emit(f"[ERROR] {filename}: {exc}", True)
 
-            except Exception as exc:
-                self.file_done.emit(filename, "FAILED")
-                self.log.emit(f"[ERROR] {filename}: {exc}", True)
-
-            self.progress.emit(int((idx + 1) / total * 100))
+                completed += 1
+                self.progress.emit(int(completed / total * 100))
 
         self.finished.emit()
+
+    def _upload_worker(self, file_path: str, upload_url: str, headers: dict) -> tuple[str, tuple[str, bool] | None]:
+        """
+        Worker thread function.
+        Returns -> (result_label_str, (log_msg_str, is_err_bool) | None)
+        """
+        filename = os.path.basename(file_path)
+        mime, _ = mimetypes.guess_type(file_path)
+        if not mime:
+            mime = "application/octet-stream"
+
+        try:
+            with open(file_path, "rb") as f:
+                resp = requests.post(
+                    upload_url,
+                    headers=headers,
+                    files={"assetData": (filename, f, mime)},
+                    data={
+                        "deviceAssetId": filename,
+                        "deviceId":      "RaidCloudImmichSuite",
+                        "fileCreatedAt": _file_mtime_iso(file_path),
+                        "fileModifiedAt": _file_mtime_iso(file_path),
+                        "isFavorite":    "false",
+                    },
+                    timeout=120,
+                )
+
+            if resp.status_code in (200, 201):
+                return ("uploaded", None)
+            elif resp.status_code == 409:
+                return ("duplicate (skipped)", None)
+            else:
+                return (f"error {resp.status_code}", (f"[WARN] {filename}: HTTP {resp.status_code} — {resp.text[:80]}", True))
+
+        except Exception as exc:
+            return ("FAILED", (f"[ERROR] {filename}: {exc}", True))
 
 
 def _file_mtime_iso(path: str) -> str:

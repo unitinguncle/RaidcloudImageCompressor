@@ -91,7 +91,7 @@ class SidebarButton(QPushButton):
         self.setChecked(active)
 
 
-class TitleBar(QWidget):
+class TitleBar(QFrame):
     """Custom title-bar strip with logo + version + connection dot."""
 
     def __init__(self, parent=None):
@@ -130,7 +130,7 @@ class TitleBar(QWidget):
         self.conn_dot.setToolTip("Connected to Immich" if ok else "Not connected")
 
 
-class StatusBar(QWidget):
+class StatusBar(QFrame):
     """Bottom status strip."""
 
     def __init__(self, parent=None):

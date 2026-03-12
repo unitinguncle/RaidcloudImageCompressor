@@ -79,7 +79,6 @@ class LocalUploadTab(QWidget):
         self.source_edit.textChanged.connect(self._update_preview)
         browse_btn = QPushButton("Browse")
         browse_btn.setProperty("class", "secondary")
-        browse_btn.setFixedWidth(90)
         browse_btn.clicked.connect(self._browse)
         row.addWidget(self.source_edit)
         row.addWidget(browse_btn)

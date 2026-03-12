@@ -6,7 +6,7 @@ Compresses images locally then optionally uploads to Immich via REST API.
 import os
 
 from PySide6.QtCore    import Qt, QTimer
-from PySide6.QtGui     import QFont
+from PySide6.QtGui     import QFont, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog,
@@ -41,6 +41,8 @@ class CompressUploadTab(QWidget):
         self._compressor: CompressorThread | None = None
         self._uploader:   UploaderThread   | None = None
         self._compressed_files: list[str] = []
+
+        self.setAcceptDrops(True)
 
         self._build_ui()
         self._load_from_config()
@@ -103,7 +105,6 @@ class CompressUploadTab(QWidget):
         self.source_edit.setReadOnly(True)
         browse_btn = QPushButton("Browse")
         browse_btn.setProperty("class", "secondary")
-        browse_btn.setFixedWidth(80)
         browse_btn.clicked.connect(self._browse_source)
         row.addWidget(self.source_edit)
         row.addWidget(browse_btn)
@@ -118,6 +119,11 @@ class CompressUploadTab(QWidget):
         info_row.addStretch()
         info_row.addWidget(self.est_size_lbl)
         src_v.addLayout(info_row)
+
+        self.drop_hint = QLabel("  ↓  or drag & drop a folder here")
+        self.drop_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; font-style: italic;")
+        src_v.addWidget(self.drop_hint)
+
         col.addWidget(grp_src)
 
         # ── Output folder ──
@@ -128,7 +134,6 @@ class CompressUploadTab(QWidget):
         self.output_edit.setPlaceholderText("Defaults to <source>/_compressed")
         out_btn = QPushButton("Browse")
         out_btn.setProperty("class", "secondary")
-        out_btn.setFixedWidth(80)
         out_btn.clicked.connect(self._browse_output)
         out_h.addWidget(self.output_edit)
         out_h.addWidget(out_btn)
@@ -225,7 +230,6 @@ class CompressUploadTab(QWidget):
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.show_key_btn = QPushButton("Show")
         self.show_key_btn.setProperty("class", "secondary")
-        self.show_key_btn.setFixedWidth(56)
         self.show_key_btn.setCheckable(True)
         self.show_key_btn.toggled.connect(
             lambda on: (
@@ -326,6 +330,20 @@ class CompressUploadTab(QWidget):
         v.addWidget(self.log_edit)
 
         return container
+
+    # ── Drag & Drop ───────────────────────────────────────────────────────────
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if os.path.isdir(path):
+                self.source_edit.setText(path)
+                self.config.last_source_folder = path
+                self._scan_folder(path)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
     def _browse_source(self):
@@ -455,16 +473,23 @@ class CompressUploadTab(QWidget):
             out_dir = (self.output_edit.text().strip() or
                        os.path.join(self.source_edit.text(), "_compressed"))
             self._compressed_files.append(os.path.join(out_dir, msg.lstrip("→ ").strip()))
-            self._log(f"✓ {filename}  {msg}")
+            
+            # Since threads can spam the log, we only log every 10th successful file for large batches
+            if self._ok_count % 10 == 0 or self._sum_total.text() == "1":
+                 self._log(f"✓ {filename}  {msg}")
         else:
             self._fail_count += 1
             self._log(f"✗ {filename}: {msg}", True)
 
-        self._sum_success.setText(str(self._ok_count))
-        self._sum_failed.setText(str(self._fail_count))
+        # UI updates can be expensive; only update summaries every so often or directly
+        if (self._ok_count + self._fail_count) % 5 == 0:
+            self._sum_success.setText(str(self._ok_count))
+            self._sum_failed.setText(str(self._fail_count))
 
     def _on_compress_done(self):
         self.progress_bar.setValue(100)
+        self._sum_success.setText(str(self._ok_count))
+        self._sum_failed.setText(str(self._fail_count))
         self._log(f"Compression done. {self._ok_count} OK, {self._fail_count} failed.")
 
         if self.upload_yes.isChecked() and self._compressed_files:
@@ -490,11 +515,19 @@ class CompressUploadTab(QWidget):
             self._up_count += 1
         elif "duplicate" in status:
             self._skip_count += 1
-        self._log(f"↑ {filename} — {status}")
-        self._sum_uploaded.setText(str(self._up_count))
-        self._sum_skipped.setText(str(self._skip_count))
+            
+        # Throttled logging for massive uploads
+        total_handled = self._up_count + self._skip_count
+        if total_handled % 10 == 0:
+            self._log(f"↑ {filename} — {status}")
+            
+        if total_handled % 5 == 0:
+            self._sum_uploaded.setText(str(self._up_count))
+            self._sum_skipped.setText(str(self._skip_count))
 
     def _on_upload_done(self):
+        self._sum_uploaded.setText(str(self._up_count))
+        self._sum_skipped.setText(str(self._skip_count))
         self._log(f"Upload complete. {self._up_count} uploaded, {self._skip_count} skipped.")
         self._finish()
 

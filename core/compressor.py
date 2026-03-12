@@ -3,13 +3,12 @@ core/compressor.py — Async-like image compression in a QThread.
 Ported + enhanced from unitinguncle/RaidcloudImageCompressor.
 """
 
-import asyncio
+import concurrent.futures
 import io
 import logging
 import os
 import time
 
-import aiofiles
 from PIL import Image
 
 from PySide6.QtCore import QThread, Signal
@@ -69,9 +68,75 @@ def estimate_compressed_size(
     return int(total_orig * ratio), len(files)
 
 
+def _compress_worker(
+    file_path: str,
+    output_folder: str,
+    output_format: str,
+    jpeg_quality: int,
+    png_compression: int,
+    preserve_exif: bool,
+    max_retries: int = 3,
+):
+    """
+    Worker function meant for ProcessPoolExecutor.
+    Must be top-level so it can be pickled.
+    Returns (filename, bool success, message string).
+    """
+    filename = os.path.basename(file_path)
+    stem, _ = os.path.splitext(filename)
+    ext_out = "jpg" if output_format == "JPEG" else "png"
+    out_name = f"{stem}_C.{ext_out}"
+    out_path = os.path.join(output_folder, out_name)
+
+    RAW_EXTENSIONS = (
+        ".cr2", ".cr3", ".nef", ".nrw",
+        ".arw", ".sr2", ".srf", ".dng",
+    )
+
+    for attempt in range(max_retries):
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+
+            img = Image.open(io.BytesIO(data))
+
+            exif_bytes = None
+            if preserve_exif:
+                exif_bytes = img.info.get("exif")
+
+            is_raw = os.path.splitext(filename)[1].lower() in RAW_EXTENSIONS
+            if is_raw or img.mode not in ("RGB", "RGBA", "L", "CMYK"):
+                img = img.convert("RGB")
+            elif img.mode == "RGBA" and output_format == "JPEG":
+                img = img.convert("RGB")
+
+            save_kwargs: dict = {
+                "format": output_format,
+                "optimize": True,
+            }
+            if output_format == "JPEG":
+                save_kwargs["quality"] = jpeg_quality
+                if exif_bytes:
+                    save_kwargs["exif"] = exif_bytes
+            else:
+                save_kwargs["compress_level"] = png_compression
+
+            img.save(out_path, **save_kwargs)
+            return (filename, True, f"→ {out_name}")
+
+        except Exception as exc:
+            if attempt == max_retries - 1:
+                return (filename, False, str(exc))
+            else:
+                time.sleep(2 ** attempt)
+                
+    return (filename, False, "Process failed silently")
+
+
 class CompressorThread(QThread):
     """
     Compresses all images in a source folder and saves them to an output folder.
+    Uses ProcessPoolExecutor to compress multiple files concurrently across CPU cores.
 
     Signals:
         progress(int)                    — 0-100 overall %
@@ -80,7 +145,7 @@ class CompressorThread(QThread):
     """
 
     progress  = Signal(int)
-    file_done = Signal(str, bool, str)   # filename, success, message
+    file_done = Signal(str, bool, str)
     finished  = Signal()
 
     def __init__(
@@ -106,15 +171,6 @@ class CompressorThread(QThread):
         self._cancel = True
 
     def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._compress_all())
-        finally:
-            loop.close()
-            self.finished.emit()
-
-    async def _compress_all(self):
         files = []
         for root, _, names in os.walk(self.source_folder):
             for name in names:
@@ -122,60 +178,40 @@ class CompressorThread(QThread):
                     files.append(os.path.join(root, name))
 
         if not files:
+            self.finished.emit()
             return
 
         os.makedirs(self.output_folder, exist_ok=True)
         total = len(files)
 
-        for idx, file_path in enumerate(files):
-            if self._cancel:
-                break
-            await self._compress_one(file_path)
-            self.progress.emit(int((idx + 1) / total * 100))
+        # Let the ProcessPoolExecutor determine max_workers internally based on CPUs
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = []
+            
+            for file_path in files:
+                futures.append(
+                    executor.submit(
+                        _compress_worker,
+                        file_path,
+                        self.output_folder,
+                        self.output_format,
+                        self.jpeg_quality,
+                        self.png_compression,
+                        self.preserve_exif,
+                    )
+                )
 
-    async def _compress_one(self, file_path: str, max_retries: int = 3):
-        filename = os.path.basename(file_path)
-        stem, _ = os.path.splitext(filename)
-        ext_out = "jpg" if self.output_format == "JPEG" else "png"
-        out_name = f"{stem}_C.{ext_out}"
-        out_path = os.path.join(self.output_folder, out_name)
+            completed = 0
+            # iterate as they complete rather than in submission order
+            for future in concurrent.futures.as_completed(futures):
+                if self._cancel:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                    
+                filename, ok, msg = future.result()
+                self.file_done.emit(filename, ok, msg)
+                
+                completed += 1
+                self.progress.emit(int((completed / total) * 100))
 
-        for attempt in range(max_retries):
-            try:
-                async with aiofiles.open(file_path, "rb") as f:
-                    data = await f.read()
-
-                img = Image.open(io.BytesIO(data))
-
-                # Extract EXIF before any conversion
-                exif_bytes = None
-                if self.preserve_exif:
-                    exif_bytes = img.info.get("exif")
-
-                # RAW → RGB; other modes normalise
-                is_raw = os.path.splitext(filename)[1].lower() in RAW_EXTENSIONS
-                if is_raw or img.mode not in ("RGB", "RGBA", "L", "CMYK"):
-                    img = img.convert("RGB")
-                elif img.mode == "RGBA" and self.output_format == "JPEG":
-                    img = img.convert("RGB")
-
-                save_kwargs: dict = {
-                    "format": self.output_format,
-                    "optimize": True,
-                }
-                if self.output_format == "JPEG":
-                    save_kwargs["quality"] = self.jpeg_quality
-                    if exif_bytes:
-                        save_kwargs["exif"] = exif_bytes
-                else:
-                    save_kwargs["compress_level"] = self.png_compression
-
-                img.save(out_path, **save_kwargs)
-                self.file_done.emit(filename, True, f"→ {out_name}")
-                return
-
-            except Exception as exc:
-                if attempt == max_retries - 1:
-                    self.file_done.emit(filename, False, str(exc))
-                else:
-                    await asyncio.sleep(2 ** attempt)
+        self.finished.emit()
