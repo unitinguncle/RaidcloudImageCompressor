@@ -6,23 +6,24 @@ Ported and restyled from shitan198u/immich-go-gui.
 import os
 import sys
 
-from PySide6.QtCore    import Qt, QDate
+from PySide6.QtCore    import Qt, QDate, QTimer
 from PySide6.QtGui     import QFont, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog,
     QGroupBox, QTextEdit, QCheckBox, QDateEdit,
-    QScrollArea, QFrame, QComboBox, QSizePolicy,
+    QScrollArea, QFrame, QComboBox, QSizePolicy, QProgressBar
 )
 
 from core.config         import AppConfig
 from core.binary_manager import (
-    RunCommandThread, DownloadBinaryThread,
+    RunCommandThread, DownloadBinaryThread, LogFileTailerThread,
     get_default_binary_path,
 )
 from ui.theme import (
     ACCENT, TEXT_MUTED, TEXT_SUCCESS, TEXT_ERROR, FONT_MONO, BG_CARD, BORDER,
 )
+import re
 
 
 class GoogleTakeoutTab(QWidget):
@@ -31,6 +32,14 @@ class GoogleTakeoutTab(QWidget):
         super().__init__(parent)
         self.config   = config
         self._runner: RunCommandThread | None = None
+        self._tailer: LogFileTailerThread | None = None
+        self._spin_idx      = 0
+        self._net_sent_prev = 0
+        self._net_recv_prev = 0
+        # Heartbeat timer drives spinner + network speed
+        self._heartbeat = QTimer(self)
+        self._heartbeat.setInterval(500)
+        self._heartbeat.timeout.connect(self._heartbeat_tick)
         self.setAcceptDrops(True)
         self._build_ui()
         self._load()
@@ -192,6 +201,26 @@ class GoogleTakeoutTab(QWidget):
         btn_row.addWidget(self.cancel_btn, 1)
         v.addLayout(btn_row)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{ border: none; background: #2A2A2A; border-radius: 4px; }}
+            QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
+        """)
+        self.progress_bar.hide()
+        v.addWidget(self.progress_bar)
+
+        self.progress_labels = QLabel("")
+        self.progress_labels.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self.progress_labels.hide()
+        v.addWidget(self.progress_labels)
+
+        self.speed_label = QLabel("")
+        self.speed_label.setStyleSheet("color: #4FC3F7; font-size: 11px; font-family: monospace;")
+        self.speed_label.hide()
+        v.addWidget(self.speed_label)
+
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setFixedHeight(130)
@@ -235,7 +264,8 @@ class GoogleTakeoutTab(QWidget):
         source = self.source_edit.text().strip()
 
         cmd = [binary, "upload", "from-google-photos",
-               "--server", server, "--api-key", key]
+               "--server", server, "--api-key", key, "--pause-immich-jobs=false",
+               "--no-ui", "--on-errors", "continue"]
 
         if self.use_date_range.isChecked():
             cmd += ["--date-range",
@@ -296,27 +326,139 @@ class GoogleTakeoutTab(QWidget):
 
     def _execute(self, cmd: list[str]):
         self.log_edit.clear()
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.progress_labels.setText("Starting process...")
+        self.progress_labels.show()
+        # Reset progress counters
+        self._cnt_found = 0
+        self._cnt_uploaded = 0
+        self._cnt_errors = 0
+        self._cnt_dupes = 0
+        self._prev_uploaded = -1
+        self._prev_errors = -1
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self._runner = RunCommandThread(cmd, self)
         self._runner.output_line.connect(self._log)
+        self._runner.log_file_detected.connect(self._start_log_tailer)
         self._runner.process_done.connect(self._on_done)
         self._runner.start()
+        # Kick off heartbeat for spinner + speed
+        try:
+            import psutil
+            c = psutil.net_io_counters()
+            self._net_sent_prev = c.bytes_sent
+            self._net_recv_prev = c.bytes_recv
+        except Exception:
+            self._net_sent_prev = self._net_recv_prev = 0
+        self.speed_label.show()
+        self._heartbeat.start()
+
+    def _start_log_tailer(self, log_path: str):
+        """Start tailing the immich-go log file and pipe its lines to _log."""
+        if self._tailer:
+            self._tailer.stop()
+            self._tailer.wait()
+        self._tailer = LogFileTailerThread(log_path, self)
+        self._tailer.new_line.connect(lambda line: self._log(line, False))
+        self._tailer.start()
 
     def _cancel(self):
         if self._runner:
             self._runner.terminate_process()
+        if self._tailer:
+            self._tailer.stop()
+        self._heartbeat.stop()
+        self.speed_label.hide()
         self.cancel_btn.setEnabled(False)
 
     def _on_done(self, rc: int):
+        self._heartbeat.stop()
+        self.speed_label.hide()
         color = TEXT_SUCCESS if rc == 0 else TEXT_ERROR
         msg   = "✓ Upload complete." if rc == 0 else f"✗ Process exited with code {rc}."
         self.log_edit.append(f'<span style="color:{color};font-weight:bold;">{msg}</span>')
+        self.progress_bar.setValue(100 if rc == 0 else self.progress_bar.value())
+        if self._tailer:
+            self._tailer.stop()
+            self._tailer = None
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
 
+    _SPINNER = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+
+    def _heartbeat_tick(self):
+        """Called every 500 ms while upload is running. Animates spinner & shows net speed."""
+        # Spinner
+        spin = self._SPINNER[self._spin_idx % len(self._SPINNER)]
+        self._spin_idx += 1
+
+        # Network speed via psutil
+        up_str = dn_str = "--"
+        try:
+            import psutil
+            c = psutil.net_io_counters()
+            sent_delta = c.bytes_sent - self._net_sent_prev
+            recv_delta = c.bytes_recv - self._net_recv_prev
+            self._net_sent_prev = c.bytes_sent
+            self._net_recv_prev = c.bytes_recv
+            # Convert bytes/0.5s to KB/s or MB/s
+            def _fmt(bps):
+                bps = bps * 2  # per 500ms interval → per second
+                if bps >= 1_048_576:
+                    return f"{bps/1_048_576:.1f} MB/s"
+                elif bps >= 1024:
+                    return f"{bps/1024:.0f} KB/s"
+                return f"{bps} B/s"
+            up_str = _fmt(sent_delta)
+            dn_str = _fmt(recv_delta)
+        except Exception:
+            pass
+
+        self.speed_label.setText(f"{spin}  ↑ Upload: {up_str}   ↓ Download: {dn_str}")
+
+    # TUI summary line still written to stdout even with --no-ui:
+    # e.g. "Immich read 100%, Assets found: 4829, Upload errors: 0, Uploaded 0"
+    _PAT_TUI = re.compile(
+        r"Assets found:\s*(\d+),\s*Upload errors:\s*(\d+),\s*Uploaded\s*(\d+)"
+    )
+    # Real new-upload confirmation lines
+    _PAT_UPLOAD = re.compile(r"INF uploaded\b", re.IGNORECASE)
+    # Duplicate / already-on-server lines
+    _PAT_DUPE = re.compile(
+        r"(?:INF server has duplicate|WRN discarded local duplicate|INF local duplicate)"
+    )
+
     def _log(self, msg: str, is_err: bool = False):
         color = TEXT_ERROR if is_err else "#A8BFCA"
+
+        # Primary source of truth: TUI summary line written to stdout
+        m = self._PAT_TUI.search(msg)
+        if m:
+            total    = int(m.group(1))
+            err_cnt  = int(m.group(2))
+            uploaded = int(m.group(3))
+            if total > 0:
+                processed = self._cnt_dupes + uploaded + err_cnt
+                pct = min(int(processed / total * 100), 100)
+                self.progress_bar.setValue(pct)
+            self.progress_labels.setText(
+                f"Total: {total}  │  Uploaded: {uploaded}  │  Duplicates: {self._cnt_dupes}  │  Errors: {err_cnt}"
+            )
+            # Only show this line in the text box when something materially changed
+            if uploaded != self._prev_uploaded or err_cnt != self._prev_errors:
+                self._prev_uploaded = uploaded
+                self._prev_errors   = err_cnt
+                summary = f"[Progress] Total: {total} │ Uploaded: {uploaded} │ Duplicates: {self._cnt_dupes} │ Errors: {err_cnt}"
+                self.log_edit.append(f'<span style="color:#6EC6E6;">{summary}</span>')
+            return
+
+        # Count duplicate events for the Duplicates counter
+        if self._PAT_DUPE.search(msg):
+            self._cnt_dupes += 1
+
+        # Show all log lines in the text box
         self.log_edit.append(f'<span style="color:{color};">{msg}</span>')
 
     def _load(self):

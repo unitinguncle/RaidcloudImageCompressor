@@ -133,10 +133,11 @@ class DownloadBinaryThread(QThread):
 
 
 class RunCommandThread(QThread):
-    """Runs an immich-go command and streams its output line by line."""
+    """Runs an immich-go command and streams its output dynamically."""
 
-    output_line  = Signal(str, bool)   # (line, is_stderr)
-    process_done = Signal(int)         # return code
+    output_line       = Signal(str, bool)  # (line, is_stderr)
+    process_done      = Signal(int)        # return code
+    log_file_detected = Signal(str)        # emits path to immich-go's log file
 
     def __init__(self, cmd: list[str], parent=None):
         super().__init__(parent)
@@ -145,17 +146,46 @@ class RunCommandThread(QThread):
 
     def run(self):
         import subprocess
+        import os
+        import sys
+        import re
+
+        kwargs = {}
+        # Ensure we can kill the entire process tree on cancellation
+        if sys.platform.startswith("win"):
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["preexec_fn"] = os.setsid
+
+        _log_pat = re.compile(r"Log file:\s*(.+)")
+
         try:
             self._proc = subprocess.Popen(
                 self._cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1, # Line-buffered output
                 encoding="utf-8",
                 errors="replace",
+                **kwargs
             )
-            for line in self._proc.stdout:
-                self.output_line.emit(line.rstrip(), False)
+
+            # Iterates dynamically, freeing us from trailing buffer issues
+            for line in iter(self._proc.stdout.readline, ""):
+                if not line:
+                    break
+                # Replace carriage returns as immich-go sometimes mixes \r and \n in progress status
+                line = line.replace('\r', '\n')
+                for subline in line.split('\n'):
+                    if subline:
+                        subline = subline.strip()
+                        # Detect the log file path and emit it for the log tailer
+                        m = _log_pat.search(subline)
+                        if m:
+                            self.log_file_detected.emit(m.group(1).strip())
+                        self.output_line.emit(subline, False)
+
             rc = self._proc.wait()
             self.process_done.emit(rc)
         except Exception as exc:
@@ -163,5 +193,58 @@ class RunCommandThread(QThread):
             self.process_done.emit(-1)
 
     def terminate_process(self):
+        import subprocess
+        import signal
+        import os
+        import sys
+
         if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+            try:
+                # Terminate the process group to ensure spawned children are also killed
+                if sys.platform.startswith("win"):
+                    # For Windows we send CTRL_BREAK to the new process group
+                    os.kill(self._proc.pid, signal.CTRL_BREAK_EVENT)
+                else:
+                    # For Unix we kill the session id equal to process group
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            except Exception as exc:
+                print(f"[BinaryManager] Failed to kill process tree: {exc}")
+                self._proc.terminate() # fallback
+
+
+class LogFileTailerThread(QThread):
+    """Tails an immich-go log file and emits new lines as they are written."""
+
+    new_line = Signal(str)   # emits each new line from the log file
+
+    def __init__(self, log_path: str, parent=None):
+        super().__init__(parent)
+        self._log_path = log_path
+        self._stop = False
+
+    def run(self):
+        import time
+        # Wait for the file to be created (up to 5 s)
+        waited = 0
+        while not os.path.exists(self._log_path) and waited < 50:
+            time.sleep(0.1)
+            waited += 1
+
+        if not os.path.exists(self._log_path):
+            return  # file never appeared, give up
+
+        try:
+            with open(self._log_path, "r", encoding="utf-8", errors="replace") as f:
+                # Seek to end so we only emit NEW lines written after we start
+                f.seek(0, 2)
+                while not self._stop:
+                    line = f.readline()
+                    if line:
+                        self.new_line.emit(line.rstrip("\r\n"))
+                    else:
+                        time.sleep(0.05)  # short sleep when no new data
+        except Exception as exc:
+            self.new_line.emit(f"[LogTailer ERROR] {exc}")
+
+    def stop(self):
+        self._stop = True
