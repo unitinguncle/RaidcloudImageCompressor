@@ -133,10 +133,10 @@ class SettingsTab(QWidget):
         form.addRow("Log Level:", self.log_level_combo)
 
         self.timeout_spin = QSpinBox()
-        self.timeout_spin.setRange(5, 600)
-        self.timeout_spin.setValue(30)
+        self.timeout_spin.setRange(5, 3600)
+        self.timeout_spin.setValue(1200)
         self.timeout_spin.setSuffix(" sec")
-        form.addRow("Request Timeout:", self.timeout_spin)
+        form.addRow("Client Timeout:", self.timeout_spin)
 
         self.recursive_cb = QCheckBox("Recursively scan sub-folders")
         self.recursive_cb.setChecked(True)

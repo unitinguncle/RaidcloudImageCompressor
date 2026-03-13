@@ -261,7 +261,7 @@ class LocalUploadTab(QWidget):
                "--server", server, "--api-key", key,
                "--pause-immich-jobs=false", "--no-ui", "--on-errors", "continue",
                "--log-level", self.config.log_level,
-               "--timeout", f"{self.config.timeout}s"]
+               "--client-timeout", f"{self.config.timeout}s"]
 
         exts = [e.strip().lstrip(".") for e in self.ext_edit.text().split(",") if e.strip()]
         for ext in exts:

@@ -267,7 +267,7 @@ class GoogleTakeoutTab(QWidget):
                "--server", server, "--api-key", key, "--pause-immich-jobs=false",
                "--no-ui", "--on-errors", "continue",
                "--log-level", self.config.log_level,
-               "--timeout", f"{self.config.timeout}s"]
+               "--client-timeout", f"{self.config.timeout}s"]
 
         if self.use_date_range.isChecked():
             cmd += ["--date-range",

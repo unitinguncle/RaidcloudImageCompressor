@@ -141,7 +141,7 @@ class AppConfig:
 
     @property
     def timeout(self) -> int:
-        return int(self._s.value("advanced/timeout", 30))
+        return int(self._s.value("advanced/timeout", 1200))  # 20 min = immich-go default
 
     @timeout.setter
     def timeout(self, v: int):
