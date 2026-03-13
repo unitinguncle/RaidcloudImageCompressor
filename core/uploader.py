@@ -130,8 +130,8 @@ class UploaderThread(QThread):
                     data={
                         "deviceAssetId": filename,
                         "deviceId":      "RaidCloudImmichSuite",
-                        "fileCreatedAt": _file_mtime_iso(file_path),
-                        "fileModifiedAt": _file_mtime_iso(file_path),
+                        "fileCreatedAt": _file_created_iso(file_path),
+                        "fileModifiedAt": _file_created_iso(file_path),
                         "isFavorite":    "false",
                     },
                     timeout=120,
@@ -148,11 +148,24 @@ class UploaderThread(QThread):
             return ("FAILED", (f"[ERROR] {filename}: {exc}", True))
 
 
-def _file_mtime_iso(path: str) -> str:
-    """Return the file's mtime as an ISO-8601 string."""
+def _file_created_iso(path: str) -> str:
+    """
+    Return the file's creation time as an ISO-8601 string.
+    - macOS:   st_birthtime  (true creation time)
+    - Windows: st_ctime      (creation time on NTFS)
+    - Linux:   st_mtime      (no creation time available, fall back to mtime)
+    """
     import datetime
-    mtime = os.path.getmtime(path)
-    return datetime.datetime.fromtimestamp(mtime).isoformat()
+    import sys
+    stat = os.stat(path)
+    if sys.platform == "darwin":
+        ts = getattr(stat, "st_birthtime", stat.st_mtime)
+    elif sys.platform.startswith("win"):
+        ts = stat.st_ctime          # st_ctime = creation time on Windows NTFS
+    else:
+        ts = stat.st_mtime          # Linux fallback
+    return datetime.datetime.fromtimestamp(ts).isoformat()
+
 
 
 class ConnectionTestThread(QThread):

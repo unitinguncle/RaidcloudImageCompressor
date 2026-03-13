@@ -235,8 +235,7 @@ class LogFileTailerThread(QThread):
 
         try:
             with open(self._log_path, "r", encoding="utf-8", errors="replace") as f:
-                # Seek to end so we only emit NEW lines written after we start
-                f.seek(0, 2)
+                # Read from the beginning so we never miss lines written before the tailer starts
                 while not self._stop:
                     line = f.readline()
                     if line:

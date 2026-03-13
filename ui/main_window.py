@@ -167,7 +167,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.setWindowTitle(APP_TITLE)
-        self.setFixedSize(1100, 720)
+        self.setMinimumSize(900, 600)
+        self.resize(1100, 720)
 
         self._build_ui()
         self._switch_tab(0)

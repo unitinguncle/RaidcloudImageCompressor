@@ -4,6 +4,14 @@ core/config.py — QSettings-based configuration for RaidCloud Immich Suite.
 
 from PySide6.QtCore import QSettings
 
+try:
+    import keyring as _keyring
+    _KEYRING_SERVICE = "RaidCloud.ImmichSuite"
+    _KEYRING_ACCOUNT = "api_key"
+    _KEYRING_OK = True
+except Exception:
+    _KEYRING_OK = False
+
 
 class AppConfig:
     """Typed wrapper around QSettings for all persistent app settings."""
@@ -25,10 +33,32 @@ class AppConfig:
 
     @property
     def api_key(self) -> str:
+        if _KEYRING_OK:
+            try:
+                val = _keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+                return val or ""
+            except Exception:
+                pass
+        # Fallback: plaintext QSettings
         return self._s.value("connection/api_key", "", str)
 
     @api_key.setter
     def api_key(self, v: str):
+        if _KEYRING_OK:
+            try:
+                if v:
+                    _keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, v)
+                else:
+                    try:
+                        _keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+                    except Exception:
+                        pass
+                # Also remove any old plaintext value from QSettings
+                self._s.remove("connection/api_key")
+                return
+            except Exception:
+                pass
+        # Fallback: plaintext QSettings
         self._s.setValue("connection/api_key", v)
 
     # ── Compression ───────────────────────────────────────────────────────────

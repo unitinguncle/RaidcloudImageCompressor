@@ -257,7 +257,11 @@ class LocalUploadTab(QWidget):
         key    = self.key_edit.text().strip()
         source = self.source_edit.text().strip()
 
-        cmd = [binary, "upload", "--server", server, "--api-key", key, "--pause-immich-jobs=false", "--no-ui", "--on-errors", "continue"]
+        cmd = [binary, "upload",
+               "--server", server, "--api-key", key,
+               "--pause-immich-jobs=false", "--no-ui", "--on-errors", "continue",
+               "--log-level", self.config.log_level,
+               "--timeout", f"{self.config.timeout}s"]
 
         exts = [e.strip().lstrip(".") for e in self.ext_edit.text().split(",") if e.strip()]
         for ext in exts:
