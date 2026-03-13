@@ -122,15 +122,16 @@ def _compress_worker(
                 save_kwargs["compress_level"] = png_compression
 
             img.save(out_path, **save_kwargs)
-            return (filename, True, f"→ {out_name}")
+            # Return the actual output path so the caller can track it without parsing strings
+            return (filename, True, out_path, "")
 
         except Exception as exc:
             if attempt == max_retries - 1:
-                return (filename, False, str(exc))
+                return (filename, False, "", str(exc))
             else:
                 time.sleep(2 ** attempt)
                 
-    return (filename, False, "Process failed silently")
+    return (filename, False, "", "Process failed silently")
 
 
 class CompressorThread(QThread):
@@ -145,7 +146,7 @@ class CompressorThread(QThread):
     """
 
     progress  = Signal(int)
-    file_done = Signal(str, bool, str)
+    file_done = Signal(str, bool, str, str)  # (filename, ok, out_path, error_msg)
     finished  = Signal()
 
     def __init__(
@@ -184,8 +185,9 @@ class CompressorThread(QThread):
         os.makedirs(self.output_folder, exist_ok=True)
         total = len(files)
 
-        # Let the ProcessPoolExecutor determine max_workers internally based on CPUs
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Limit to 4 workers to prevent OOM on high-core-count machines (e.g. M-series Mac)
+        max_workers = min(4, os.cpu_count() or 1)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             
             for file_path in files:
@@ -208,8 +210,8 @@ class CompressorThread(QThread):
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
                     
-                filename, ok, msg = future.result()
-                self.file_done.emit(filename, ok, msg)
+                filename, ok, out_path, err_msg = future.result()
+                self.file_done.emit(filename, ok, out_path, err_msg)
                 
                 completed += 1
                 self.progress.emit(int((completed / total) * 100))

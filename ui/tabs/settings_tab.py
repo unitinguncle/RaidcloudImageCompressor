@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config  import AppConfig
-from core.uploader import UploaderThread
+from core.uploader import UploaderThread, ConnectionTestThread
 from ui.theme import (
     ACCENT, TEXT_MUTED, TEXT_SUCCESS, TEXT_ERROR, TEXT_WARNING, FONT_MONO,
 )
@@ -23,6 +23,7 @@ class SettingsTab(QWidget):
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
         self.config = config
+        self._conn_tester: ConnectionTestThread | None = None
         self._build_ui()
         self._load()
 
@@ -87,12 +88,12 @@ class SettingsTab(QWidget):
         form.addRow("API Key:", api_row)
 
         test_row = QHBoxLayout()
-        test_btn = QPushButton("Test Connection")
-        test_btn.setProperty("class", "secondary")
-        test_btn.clicked.connect(self._test_connection)
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.setProperty("class", "secondary")
+        self.test_btn.clicked.connect(self._test_connection)
         self.conn_lbl = QLabel("")
         self.conn_lbl.setStyleSheet(f"font-size: 11px; font-family: '{FONT_MONO}';")
-        test_row.addWidget(test_btn)
+        test_row.addWidget(self.test_btn)
         test_row.addWidget(self.conn_lbl)
         test_row.addStretch()
         form.addRow("", test_row)
@@ -168,10 +169,16 @@ class SettingsTab(QWidget):
             self.conn_lbl.setStyleSheet(f"color: {TEXT_WARNING}; font-size: 11px;")
             self.conn_lbl.setText("Enter URL and key first.")
             return
+        self.test_btn.setEnabled(False)
         self.conn_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
         self.conn_lbl.setText("Testing…")
 
-        ok, msg = UploaderThread.test_connection(url, key)
+        self._conn_tester = ConnectionTestThread(url, key, parent=self)
+        self._conn_tester.result.connect(self._on_conn_result)
+        self._conn_tester.start()
+
+    def _on_conn_result(self, ok: bool, msg: str):
+        self.test_btn.setEnabled(True)
         color = TEXT_SUCCESS if ok else TEXT_ERROR
         self.conn_lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-family: '{FONT_MONO}';")
         self.conn_lbl.setText(msg)

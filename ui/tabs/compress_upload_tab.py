@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.compressor import CompressorThread, estimate_compressed_size, VALID_IMAGE_EXTENSIONS
-from core.uploader   import UploaderThread
+from core.uploader   import UploaderThread, ConnectionTestThread
 from core.config     import AppConfig
 from ui.theme        import (
     ACCENT, BG_CARD, BG_INPUT, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -40,6 +40,7 @@ class CompressUploadTab(QWidget):
         self.config = config
         self._compressor: CompressorThread | None = None
         self._uploader:   UploaderThread   | None = None
+        self._conn_tester: ConnectionTestThread | None = None
         self._compressed_files: list[str] = []
 
         self.setAcceptDrops(True)
@@ -404,17 +405,22 @@ class CompressUploadTab(QWidget):
             self.conn_status_lbl.setStyleSheet(f"color: {TEXT_WARNING}; font-size: 11px;")
             self.conn_status_lbl.setText("Enter URL and key first.")
             return
+        self.test_conn_btn.setEnabled(False)
         self.conn_status_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
         self.conn_status_lbl.setText("Testing…")
 
-        ok, msg = UploaderThread.test_connection(url, key)
+        self._conn_tester = ConnectionTestThread(url, key, parent=self)
+        self._conn_tester.result.connect(self._on_conn_result)
+        self._conn_tester.start()
+
+    def _on_conn_result(self, ok: bool, msg: str):
+        self.test_conn_btn.setEnabled(True)
         color = TEXT_SUCCESS if ok else TEXT_ERROR
         self.conn_status_lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-family: '{FONT_MONO}';")
         self.conn_status_lbl.setText(msg)
-
         if ok:
-            self.config.server_url = url
-            self.config.api_key    = key
+            self.config.server_url = self.server_url_edit.text().strip()
+            self.config.api_key    = self.api_key_edit.text().strip()
 
     def _log(self, msg: str, is_err: bool = False):
         color = TEXT_ERROR if is_err else TEXT_SECONDARY
@@ -467,19 +473,18 @@ class CompressUploadTab(QWidget):
     def _on_compress_progress(self, pct: int):
         self.progress_bar.setValue(pct)
 
-    def _on_compress_file(self, filename: str, ok: bool, msg: str):
+    def _on_compress_file(self, filename: str, ok: bool, out_path: str, err_msg: str):
         if ok:
             self._ok_count += 1
-            out_dir = (self.output_edit.text().strip() or
-                       os.path.join(self.source_edit.text(), "_compressed"))
-            self._compressed_files.append(os.path.join(out_dir, msg.lstrip("→ ").strip()))
+            # Use the actual output path returned by the worker — no string parsing
+            self._compressed_files.append(out_path)
             
             # Since threads can spam the log, we only log every 10th successful file for large batches
             if self._ok_count % 10 == 0 or self._sum_total.text() == "1":
-                 self._log(f"✓ {filename}  {msg}")
+                 self._log(f"✓ {filename}")
         else:
             self._fail_count += 1
-            self._log(f"✗ {filename}: {msg}", True)
+            self._log(f"✗ {filename}: {err_msg}", True)
 
         # UI updates can be expensive; only update summaries every so often or directly
         if (self._ok_count + self._fail_count) % 5 == 0:

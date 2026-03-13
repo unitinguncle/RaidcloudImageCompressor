@@ -153,3 +153,26 @@ def _file_mtime_iso(path: str) -> str:
     import datetime
     mtime = os.path.getmtime(path)
     return datetime.datetime.fromtimestamp(mtime).isoformat()
+
+
+class ConnectionTestThread(QThread):
+    """
+    Runs UploaderThread.test_connection() off the main thread so the UI
+    never freezes while waiting for a server response.
+
+    Signals:
+        result(ok: bool, message: str)
+    """
+
+    result = Signal(bool, str)
+
+    def __init__(self, server_url: str, api_key: str, timeout: int = 10, parent=None):
+        super().__init__(parent)
+        self._url     = server_url
+        self._key     = api_key
+        self._timeout = timeout
+
+    def run(self):
+        ok, msg = UploaderThread.test_connection(self._url, self._key, self._timeout)
+        self.result.emit(ok, msg)
+
