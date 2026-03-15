@@ -36,10 +36,19 @@ class AppConfig:
         if _KEYRING_OK:
             try:
                 val = _keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-                return val or ""
+                if val is not None:
+                    # Key already in keychain — use it directly
+                    return val
+                # Key not yet in keychain — check QSettings for auto-migration
+                legacy = self._s.value("connection/api_key", "", str)
+                if legacy:
+                    _keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, legacy)
+                    self._s.remove("connection/api_key")
+                    return legacy
+                return ""
             except Exception:
                 pass
-        # Fallback: plaintext QSettings
+        # Fallback: plaintext QSettings (keyring unavailable)
         return self._s.value("connection/api_key", "", str)
 
     @api_key.setter
