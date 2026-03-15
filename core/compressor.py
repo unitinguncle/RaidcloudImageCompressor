@@ -102,6 +102,7 @@ def _compress_worker(
 
             exif_bytes = None
             if preserve_exif:
+                img.load()  # force full decode so img.info["exif"] is populated
                 exif_bytes = img.info.get("exif")
 
             is_raw = os.path.splitext(filename)[1].lower() in RAW_EXTENSIONS

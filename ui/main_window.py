@@ -215,9 +215,22 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._settings_tab)
         main.addWidget(self.stack, 1)
 
+        # U-03: Refresh all tabs when Settings are saved
+        self._settings_tab.settings_saved.connect(self._on_settings_saved)
+
         # Status bar
         self.status_bar = StatusBar()
         root_v.addWidget(self.status_bar)
+
+    def _on_settings_saved(self):
+        """Reload server/key/binary fields in all upload tabs after Settings save."""
+        for tab in (self._compress_tab, self._takeout_tab, self._local_tab):
+            if hasattr(tab, "_load_from_config"):
+                tab._load_from_config()
+            elif hasattr(tab, "_load"):
+                tab._load()
+        self.status_bar.set_message("Settings applied to all tabs.", TEXT_SUCCESS)
+
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()

@@ -5,7 +5,7 @@ Ported and restyled from shitan198u/immich-go-gui.
 
 import os
 import sys
-
+import re
 from PySide6.QtCore    import Qt, QDate, QTimer
 from PySide6.QtGui     import QFont, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
@@ -23,7 +23,6 @@ from core.binary_manager import (
 from ui.theme import (
     ACCENT, TEXT_MUTED, TEXT_SUCCESS, TEXT_ERROR, FONT_MONO, BG_CARD, BORDER,
 )
-import re
 
 
 class GoogleTakeoutTab(QWidget):
@@ -201,6 +200,23 @@ class GoogleTakeoutTab(QWidget):
         btn_row.addWidget(self.cancel_btn, 1)
         v.addLayout(btn_row)
 
+        # Retry + Open Log row (shown only after completion)
+        post_row = QHBoxLayout()
+        self.retry_btn = QPushButton("↺  Retry")
+        self.retry_btn.setProperty("class", "secondary")
+        self.retry_btn.setFixedHeight(32)
+        self.retry_btn.hide()
+        self.retry_btn.clicked.connect(self._run)
+        self.open_log_btn = QPushButton("📄  Open Log File")
+        self.open_log_btn.setProperty("class", "secondary")
+        self.open_log_btn.setFixedHeight(32)
+        self.open_log_btn.hide()
+        self.open_log_btn.clicked.connect(self._open_log_file)
+        post_row.addWidget(self.retry_btn)
+        post_row.addWidget(self.open_log_btn)
+        post_row.addStretch()
+        v.addLayout(post_row)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(8)
         self.progress_bar.setTextVisible(False)
@@ -365,6 +381,7 @@ class GoogleTakeoutTab(QWidget):
         self._tailer = LogFileTailerThread(log_path, self)
         self._tailer.new_line.connect(lambda line: self._log(line, False))
         self._tailer.start()
+        self._last_log_path = log_path  # remember path for Open Log button
 
     def _cancel(self):
         if self._runner:
@@ -378,17 +395,44 @@ class GoogleTakeoutTab(QWidget):
     def _on_done(self, rc: int):
         self._heartbeat.stop()
         self.speed_label.hide()
-        color = TEXT_SUCCESS if rc == 0 else TEXT_ERROR
-        msg   = "✓ Upload complete." if rc == 0 else f"✗ Process exited with code {rc}."
+        success = (rc == 0)
+        color = TEXT_SUCCESS if success else TEXT_ERROR
+        msg   = "✓ Upload complete." if success else f"✗ Process exited with code {rc}."
         self.log_edit.append(f'<span style="color:{color};font-weight:bold;">{msg}</span>')
-        self.progress_bar.setValue(100 if rc == 0 else self.progress_bar.value())
+        self.progress_bar.setValue(100 if success else self.progress_bar.value())
         if self._tailer:
             self._tailer.stop()
             self._tailer = None
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        # Show Retry on failure, always show Open Log button
+        self.retry_btn.setVisible(not success)
+        self.open_log_btn.setVisible(bool(getattr(self, '_last_log_path', None)))
 
-    _SPINNER = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+    def _open_log_file(self):
+        """Open the immich-go log file in the OS default text/log viewer."""
+        path = getattr(self, '_last_log_path', None)
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            if sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", path])
+            elif sys.platform.startswith("win"):
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            self._log(f"[WARN] Could not open log file: {exc}", True)
+
+    # W-02: Braille chars render correctly on macOS/Linux.
+    # On Windows, fall back to ASCII spinner to avoid boxes (missing font glyphs).
+    _SPINNER = (
+        ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+        if sys.platform != "win32" else
+        ["|", "/", "-", "\\"]
+    )
 
     def _heartbeat_tick(self):
         """Called every 500 ms while upload is running. Animates spinner & shows net speed."""

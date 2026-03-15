@@ -2,7 +2,7 @@
 ui/tabs/settings_tab.py — App-wide settings (server, binary, advanced).
 """
 
-from PySide6.QtCore    import Qt
+from PySide6.QtCore    import Qt, Signal
 from PySide6.QtGui     import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -19,6 +19,8 @@ from ui.theme import (
 
 
 class SettingsTab(QWidget):
+
+    settings_saved = Signal()  # emitted after every successful save
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -197,6 +199,7 @@ class SettingsTab(QWidget):
         self.config.recursive_upload     = self.recursive_cb.isChecked()
         self.config.sync()
         QMessageBox.information(self, "Saved", "Settings saved successfully.")
+        self.settings_saved.emit()  # notify other tabs to reload their fields
 
     def _reset(self):
         reply = QMessageBox.question(
