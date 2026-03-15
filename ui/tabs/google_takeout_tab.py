@@ -239,7 +239,8 @@ class GoogleTakeoutTab(QWidget):
 
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setFixedHeight(130)
+        self.log_edit.setMinimumHeight(130)
+        self.log_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.log_edit.setPlaceholderText("immich-go output will appear here…")
         v.addWidget(self.log_edit)
 
@@ -399,7 +400,12 @@ class GoogleTakeoutTab(QWidget):
         color = TEXT_SUCCESS if success else TEXT_ERROR
         msg   = "✓ Upload complete." if success else f"✗ Process exited with code {rc}."
         self.log_edit.append(f'<span style="color:{color};font-weight:bold;">{msg}</span>')
-        self.progress_bar.setValue(100 if success else self.progress_bar.value())
+        
+        # B-12 / U-04: Only hit 100% on success. If cancelled (-15), leave it alone
+        # or optionally reset/style red. We'll leave it as-is but ensure it doesn't jump to 100%.
+        if success:
+            self.progress_bar.setValue(100)
+        
         if self._tailer:
             self._tailer.stop()
             self._tailer = None
@@ -466,8 +472,9 @@ class GoogleTakeoutTab(QWidget):
 
     # TUI summary line still written to stdout even with --no-ui:
     # e.g. "Immich read 100%, Assets found: 4829, Upload errors: 0, Uploaded 0"
+    # Or future variants like "Uploaded: 0"
     _PAT_TUI = re.compile(
-        r"Assets found:\s*(\d+),\s*Upload errors:\s*(\d+),\s*Uploaded\s*(\d+)"
+        r"Assets found[:\s]*(\d+)[,\s]*Upload errors[:\s]*(\d+)[,\s]*Uploaded[:\s]*(\d+)"
     )
     # Real new-upload confirmation lines
     _PAT_UPLOAD = re.compile(r"INF uploaded\b", re.IGNORECASE)

@@ -163,13 +163,23 @@ class RunCommandThread(QThread):
             self._proc = subprocess.Popen(
                 self._cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,  # Separate stderr
                 text=True,
                 bufsize=1, # Line-buffered output
                 encoding="utf-8",
                 errors="replace",
                 **kwargs
             )
+
+            import threading
+            
+            def read_stderr():
+                for line in iter(self._proc.stderr.readline, ""):
+                    if line:
+                        self.output_line.emit(f"[FATAL] {line.strip()}", True)
+            
+            err_thread = threading.Thread(target=read_stderr, daemon=True)
+            err_thread.start()
 
             # Iterates dynamically, freeing us from trailing buffer issues
             for line in iter(self._proc.stdout.readline, ""):
@@ -187,6 +197,7 @@ class RunCommandThread(QThread):
                         self.output_line.emit(subline, False)
 
             rc = self._proc.wait()
+            err_thread.join(timeout=1.0)
             self.process_done.emit(rc)
         except Exception as exc:
             self.output_line.emit(f"[ERROR] {exc}", True)

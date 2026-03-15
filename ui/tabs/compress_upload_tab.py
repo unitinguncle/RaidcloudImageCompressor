@@ -486,8 +486,9 @@ class CompressUploadTab(QWidget):
             self._fail_count += 1
             self._log(f"✗ {filename}: {err_msg}", True)
 
-        # UI updates can be expensive; only update summaries every so often or directly
-        if (self._ok_count + self._fail_count) % 5 == 0:
+        # UI updates can be expensive; only update summaries every 5th file for large batches
+        total_files = int(self._sum_total.text() or "0")
+        if total_files < 5 or (self._ok_count + self._fail_count) % 5 == 0:
             self._sum_success.setText(str(self._ok_count))
             self._sum_failed.setText(str(self._fail_count))
 

@@ -191,7 +191,12 @@ class SettingsTab(QWidget):
             self.binary_edit.setText(path)
 
     def _save(self):
-        self.config.server_url           = self.url_edit.text().strip()
+        url = self.url_edit.text().strip()
+        if url and not url.startswith(("http://", "https://")):
+            QMessageBox.warning(self, "Invalid URL", "Server URL must start with http:// or https://")
+            return
+            
+        self.config.server_url           = url
         self.config.api_key              = self.key_edit.text().strip()
         self.config.binary_path_override = self.binary_edit.text().strip()
         self.config.log_level            = self.log_level_combo.currentText()
