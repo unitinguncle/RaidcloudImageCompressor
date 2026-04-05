@@ -1,3 +1,26 @@
+# Python
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+
+# PyInstaller build artefacts
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Immich-go binary (auto-downloaded at runtime)
+immich-go/
+immich-go.exe
+
+# Local face database (runtime data, not source)
+*.db
+faces.db
+
+# IDE
+.idea/
+.vscode/
