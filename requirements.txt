@@ -2,3 +2,5 @@ PySide6>=6.5.0
 Pillow>=10.0.0
 requests>=2.31.0
 psutil>=5.9.0
+boto3>=1.34.0
+botocore>=1.34.0

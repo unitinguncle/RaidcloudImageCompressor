@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config         import AppConfig
+from core.face_db        import FaceDB
 from core.binary_manager import (
     DownloadBinaryThread, get_default_binary_path,
 )
@@ -26,6 +27,8 @@ from ui.tabs.compress_upload_tab import CompressUploadTab
 from ui.tabs.google_takeout_tab  import GoogleTakeoutTab
 from ui.tabs.local_upload_tab    import LocalUploadTab
 from ui.tabs.settings_tab        import SettingsTab
+from ui.tabs.smart_album_tab     import SmartAlbumTab
+from ui.tabs.face_search_tab     import FaceSearchTab
 
 import os
 
@@ -37,6 +40,8 @@ NAV_ITEMS = [
     ("⚡", "Compress & Upload", "compress"),
     ("🌐", "Google Takeout",    "takeout"),
     ("📁", "Local Upload",      "local"),
+    ("🎞", "Smart Album",       "smart_album"),
+    ("🔍", "Face Search",       "face_search"),
     ("⚙",  "Settings",         "settings"),
 ]
 
@@ -166,9 +171,11 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig):
         super().__init__()
         self.config = config
+        # Shared FaceDB instance (both Smart Album and Face Search use it)
+        self._face_db = FaceDB(config.face_db_path)
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(900, 600)
-        self.resize(1100, 720)
+        self.setMinimumSize(1000, 640)
+        self.resize(1200, 760)
 
         self._build_ui()
         self._switch_tab(0)
@@ -204,14 +211,18 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setStyleSheet(f"background: {BG_DARK};")
 
-        self._compress_tab = CompressUploadTab(self.config)
-        self._takeout_tab  = GoogleTakeoutTab(self.config)
-        self._local_tab    = LocalUploadTab(self.config)
-        self._settings_tab = SettingsTab(self.config)
+        self._compress_tab   = CompressUploadTab(self.config)
+        self._takeout_tab    = GoogleTakeoutTab(self.config)
+        self._local_tab      = LocalUploadTab(self.config)
+        self._smart_album_tab = SmartAlbumTab(self.config, self._face_db)
+        self._face_search_tab = FaceSearchTab(self.config, self._face_db)
+        self._settings_tab   = SettingsTab(self.config)
 
         self.stack.addWidget(self._compress_tab)
         self.stack.addWidget(self._takeout_tab)
         self.stack.addWidget(self._local_tab)
+        self.stack.addWidget(self._smart_album_tab)
+        self.stack.addWidget(self._face_search_tab)
         self.stack.addWidget(self._settings_tab)
         main.addWidget(self.stack, 1)
 
@@ -224,7 +235,10 @@ class MainWindow(QMainWindow):
 
     def _on_settings_saved(self):
         """Reload server/key/binary fields in all upload tabs after Settings save."""
-        for tab in (self._compress_tab, self._takeout_tab, self._local_tab):
+        for tab in (
+            self._compress_tab, self._takeout_tab, self._local_tab,
+            self._smart_album_tab, self._face_search_tab,
+        ):
             if hasattr(tab, "_load_from_config"):
                 tab._load_from_config()
             elif hasattr(tab, "_load"):
